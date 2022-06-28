@@ -42,7 +42,7 @@ router.get("/:code", async (req, res, next) => {
             throw new ExpressError("Company not found", 404);
         }
         
-        let { code, name, description, industry } = results.rows[0];
+        let { code, name, description, industry } = results.rows[0]; 
         let industries = results.rows.map(r => r.industry);
         
         const invoices_results = await db.query(`SELECT id FROM invoices WHERE comp_code = $1`, [req.params.code]);

@@ -4,134 +4,103 @@ const db = require("../db");
 const ExpressError = require("../expressError");
 
 /*
-GET /invoices
-    Return info on invoices: like {invoices: [{id, comp_code}, ...]}
+GET /industries
+    Returns list of industries, like {industries: [{code, industry, companies: [code, ...]}, ...]}
 */
 router.get("/", async (req, res, next) => {
     try{
-        const results = await db.query("SELECT id, comp_code, amt, paid, add_date, paid_date FROM invoices");
-        return res.json({ invoices: results.rows });
-    } catch(err){
-        return next(err);
-    }
-});
+        const results = await db.query(
+            `SELECT i.code, i.industry, ci.comp_code 
+            FROM industries AS i
+            LEFT JOIN companies_industries AS ci 
+                ON i.code = ci.ind_code
+            LEFT JOIN companies AS c 
+                ON c.code = ci.comp_code`
+        );
 
-/*
-GET /invoices/[id]
-    Returns obj on given invoice.
-    If invoice cannot be found, returns 404.
-    Returns {invoice: {id, amt, paid, add_date, paid_date, company: {code, name, description}}}
-*/
-router.get("/:id", async (req, res, next) => {
-    try{
-        const results = await db.query(`SELECT id, comp_code, amt, paid, add_date, paid_date FROM invoices WHERE id=$1`, [req.params.id]);
-        if(results.rows.length === 0){
-            throw new ExpressError("Invoice not found", 404);
+        let industries = [];
+        let industries_codes = [];
+        results.rows.forEach(value => industries_codes.push(value.code));
+        industries_codes = new Set(industries_codes);
+
+        for(let indCode of industries_codes){
+            let industry_obj = { code: indCode }
+            let companies = [];
+            for(let values of results.rows){
+                if(values.code == indCode){
+                    industry_obj.industry = values.industry;
+
+                    if(values.comp_code != null){
+                        companies.push(values.comp_code);
+                    }
+                }
+            }
+            industry_obj.companies = companies;
+            industries.push(industry_obj);
         }
-        let { id, comp_code, amt, paid, add_date, paid_date } = results.rows[0];
-
-        const result_company = await db.query(`SELECT name, description FROM companies WHERE code = $1`, [comp_code]);
-        let company = { 
-            code: comp_code, 
-            name: result_company.rows[0].name, 
-            description: result_company.rows[0].description 
-        };
-
-        return res.json({ invoice: { id, amt, paid, add_date, paid_date, company }});
+        
+        return res.json({ industries: industries });
     } catch(err){
         return next(err);
     }
 });
 
 /*
-POST /invoices
-    Adds an invoice.
-    Needs to be passed in JSON body of: {comp_code, amt}
-    Returns: {invoice: {id, comp_code, amt, paid, add_date, paid_date}}
+POST /industries
+    Adds an industry.
+    Needs to be passed in JSON body of: {code, industry}
+    Returns: {industry: {code, industry}}
 */
 router.post("/", async (req, res, next) => {
     try{
-        const { comp_code, amt } = req.body;
+        const { code, industry } = req.body;
 
-        const result_company = await db.query(`SELECT name, description FROM companies WHERE code = $1`, [comp_code]);
-        if(result_company.rows.length === 0){
-            throw new ExpressError("Company code is not valid", 404);
+        const result_industry = await db.query(`SELECT code, industry FROM industries WHERE code = $1`, [code]);
+        if(result_industry.rows.length > 0){
+            throw new ExpressError("Industry code is not valid", 404);
         }      
         
         const results = await db.query(
-            `INSERT INTO invoices (comp_code, amt) 
+            `INSERT INTO industries (code, industry) 
              VALUES ($1, $2)
-             RETURNING id, comp_code, amt, paid, add_date, paid_date`,
-        [comp_code, amt]);
+             RETURNING code, industry`,
+        [code, industry]);
 
-        return res.status(201).json({ invoice: results.rows[0] });
+        return res.status(201).json({ industry: results.rows[0] });
     } catch(err){
         return next(err);
     }
 });
 
 /*
-PUT /invoices/[id]
-    Updates an invoice.
-    If invoice cannot be found, returns a 404.
-    Needs to be passed in a JSON body of {amt}
-    Returns: {invoice: {id, comp_code, amt, paid, add_date, paid_date}}
+POST /industries/[code]
+    Associating an industry to a company.
+    If industry cannot be found, returns a 404.
+    Needs to be passed in a JSON body of { comp_code }
+    Returns: {industry_company: {code, industry, comp_code}}
 */
-router.patch("/:id", async (req, res, next) => {
+router.post("/:code", async (req, res, next) => {
     try{
-        const date = new Date();
-        const { amt, paid } = req.body;
-
-        const result_invoice = await db.query(`SELECT paid, paid_date FROM invoices WHERE id = $1`, [req.params.id]);
-        if(result_invoice.rows.length === 0){
-            throw new ExpressError("Invoice not found", 404);
-        }
-        let current_paid_status = result_invoice.rows[0].paid;
-        let current_paid_date = result_invoice.rows[0].paid_date;
+        const { comp_code } = req.body;
+        const result_industry = await db.query(`SELECT industry FROM industries WHERE code = $1`, [req.params.code]);
+        if(result_industry.rows.length === 0){
+            throw new ExpressError("Industry code is not valid", 404);
+        } 
+        const result_company = await db.query(`SELECT name FROM companies WHERE code = $1`, [comp_code]);
+        if(result_company.rows.length === 0){
+            throw new ExpressError("Company code is not valid", 404);
+        } 
         
-        let paid_date;
-        if(paid == true){
-            paid_date = [date.getFullYear(), date.getMonth(), date.getDay()].join("-");
-        }else{
-            if(current_paid_status == true){
-                paid_date = null;
-            }else{
-                paid_date = current_paid_date;
-            }
-        }
-
         const results = await db.query(
-            `UPDATE invoices 
-            SET amt=$1, paid=$2, paid_date=$3
-            WHERE id = $4
-            RETURNING id, comp_code, amt, paid, add_date, paid_date`,
-        [amt, paid, paid_date, req.params.id]);
+            `INSERT INTO companies_industries (comp_code, ind_code) 
+             VALUES ($1, $2)
+             RETURNING comp_code, ind_code`,
+        [comp_code, req.params.code]);
 
-        return res.json({ invoice: results.rows[0] });
+        return res.status(201).json({ "industry_company": { code: req.params.code, industry: result_industry.rows[0].industry, comp_code } });
     } catch(err){
         return next(err);
     }
 });
-
-/*
-DELETE /invoices/[id]
-    Deletes an invoice.
-    If invoice cannot be found, returns a 404.
-    Returns: {status: "deleted"}
-*/
-router.delete("/:id", async (req, res, next) => {
-    try{
-        const results = await db.query(`SELECT id FROM invoices WHERE id = $1`, [req.params.id]);
-        if(results.rows.length === 0){
-            throw new ExpressError("Invoice not found", 404);
-        }
-
-        const delete_result = await db.query("DELETE FROM invoices WHERE id = $1", [req.params.id]);
-        return res.json({status: "deleted"});
-    } catch(err){
-        return next(err);
-    }
-});
-
 
 module.exports = router;
